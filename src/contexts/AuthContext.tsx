@@ -35,13 +35,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(session?.user ?? null);
       setLoading(false);
 
-      // Handle Google sign-in domain restriction
+      // Handle Google sign-in domain restriction (only in production)
       if (event === 'SIGNED_IN' && session?.user) {
         const email = session.user.email;
         const isGoogleProvider = session.user.app_metadata?.provider === 'google';
         
-        // If it's a Google sign-in and not from grepsr.com domain, sign them out
-        if (isGoogleProvider && email && !email.endsWith('@grepsr.com')) {
+        // Check if we're in development environment
+        const isDevelopment = import.meta.env.DEV || 
+                             import.meta.env.VITE_NODE_ENV === 'development' ||
+                             window.location.hostname === 'localhost' ||
+                             window.location.hostname === '127.0.0.1';
+        
+        // If it's a Google sign-in and not from grepsr.com domain, sign them out (only in production)
+        if (!isDevelopment && isGoogleProvider && email && !email.endsWith('@grepsr.com')) {
           await supabase.auth.signOut();
           alert('Access restricted: Only @grepsr.com email addresses are allowed to sign in with Google.');
           return;
@@ -82,8 +88,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       };
     }
 
-    // Check domain restriction for email signup
-    if (!email.endsWith('@grepsr.com')) {
+    // Check domain restriction for email signup (skip in development)
+    if (!isDevelopment && !email.endsWith('@grepsr.com')) {
       return { 
         error: { 
           message: 'Sign up is restricted to @grepsr.com email addresses only',
@@ -132,17 +138,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signInWithGoogle = async () => {
     console.log("redirecting to ", getRedirectUrl());
+    
+    // Check if we're in development environment
+    const isDevelopment = import.meta.env.DEV || 
+                         import.meta.env.VITE_NODE_ENV === 'development' ||
+                         window.location.hostname === 'localhost' ||
+                         window.location.hostname === '127.0.0.1';
+    
     try {
+      const oauthOptions: any = {
+        redirectTo: getRedirectUrl(),
+        queryParams: {
+          access_type: 'offline',
+          prompt: 'consent'
+        }
+      };
+      
+      // Only restrict domain in production
+      if (!isDevelopment) {
+        oauthOptions.queryParams.hd = 'grepsr.com';
+      }
+      
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
-        options: {
-          redirectTo: getRedirectUrl(),
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-            hd: 'grepsr.com' // This restricts to grepsr.com domain
-          }
-        }
+        options: oauthOptions
       });
       
       return { error };

@@ -59,6 +59,7 @@ export function Dashboard({ onJoinMeeting }: DashboardProps) {
   const contributorsRefs = useRef<{ [meetingId: string]: HTMLDivElement | null }>({});
   useEffect(() => {
     if (user) {
+      ensureUserProfile();
       fetchProfile();
       fetchMeetings();
       
@@ -158,6 +159,61 @@ export function Dashboard({ onJoinMeeting }: DashboardProps) {
       };
     }
   }, [user]);
+
+  const ensureUserProfile = async () => {
+    if (!user) return;
+    
+    console.log('🔍 Ensuring user profile exists for:', user.id);
+    
+    try {
+      // Check if profile already exists
+      const { data: existingProfile, error: fetchError } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('id', user.id)
+        .single();
+
+      if (fetchError && fetchError.code !== 'PGRST116') { // PGRST116 = no rows found
+        console.error('Error checking user profile:', fetchError);
+        return;
+      }
+
+      if (!existingProfile) {
+        console.log('👤 Creating user profile for new user:', user.id);
+        
+        // Extract display name from user metadata or email
+        const displayName = user.user_metadata?.display_name ||
+                           user.user_metadata?.full_name ||
+                           user.email?.split('@')[0] ||
+                           'User';
+
+        const { data: newProfile, error: createError } = await supabase
+          .from('user_profiles')
+          .insert([
+            {
+              id: user.id,
+              email: user.email,
+              display_name: displayName,
+              avatar_url: user.user_metadata?.avatar_url || null,
+            },
+          ])
+          .select()
+          .single();
+
+        if (createError) {
+          console.error('❌ Failed to create user profile:', createError);
+        } else {
+          console.log('✅ User profile created successfully:', newProfile);
+          setProfile(newProfile);
+        }
+      } else {
+        console.log('✅ User profile already exists:', existingProfile);
+        setProfile(existingProfile);
+      }
+    } catch (err) {
+      console.error('💥 Error in ensureUserProfile:', err);
+    }
+  };
 
   const fetchProfile = async () => {
     if (!user) return;
@@ -1104,18 +1160,21 @@ Are you sure you want to end this meeting?`;
                             )}
                           </button>
                         )}
-                        <button
-                          onClick={() => handleDeleteMeetingClick(meeting.id, meeting.title)}
-                          disabled={deletingMeeting === meeting.id}
-                          className="p-2 text-gray-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                          title="Delete meeting permanently (⚠️ Cannot be undone)"
-                        >
-                          {deletingMeeting === meeting.id ? (
-                            <div className="w-5 h-5 animate-spin rounded-full border-2 border-red-600 border-t-transparent"></div>
-                          ) : (
-                            <Trash2 className="w-5 h-5" />
-                          )}
-                        </button>
+                        {/* Delete button - only for hosts */}
+                        {meeting.user_role === 'host' && (
+                          <button
+                            onClick={() => handleDeleteMeetingClick(meeting.id, meeting.title)}
+                            disabled={deletingMeeting === meeting.id}
+                            className="p-2 text-gray-600 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                            title="Delete meeting permanently (⚠️ Cannot be undone)"
+                          >
+                            {deletingMeeting === meeting.id ? (
+                              <div className="w-5 h-5 animate-spin rounded-full border-2 border-red-600 border-t-transparent"></div>
+                            ) : (
+                              <Trash2 className="w-5 h-5" />
+                            )}
+                          </button>
+                        )}
                       </div>
                     </div>
                   </div>

@@ -73,7 +73,11 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
 
   useEffect(() => {
     fetchMeeting();
-  }, [meetingCode]);
+    // Ensure current user profile exists
+    if (user) {
+      ensureUserProfile(user);
+    }
+  }, [meetingCode, user]);
 
   useEffect(() => {
     if (meeting) {
@@ -284,6 +288,67 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
     } catch (err) {
       console.error('Error in fetchNotes:', err);
       setNotes([]);
+    }
+  };
+
+  const ensureUserProfile = async (currentUser: any) => {
+    console.log('🔍 Ensuring user profile exists for:', currentUser.id);
+    
+    try {
+      // Check if profile already exists
+      const { data: existingProfile, error: fetchError } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('id', currentUser.id)
+        .single();
+
+      if (fetchError && fetchError.code !== 'PGRST116') { // PGRST116 = no rows found
+        console.error('Error checking user profile:', fetchError);
+        return;
+      }
+
+      if (!existingProfile) {
+        console.log('👤 Creating user profile for new user:', currentUser.id);
+        
+        // Extract display name from user metadata or email
+        const displayName = currentUser.user_metadata?.display_name ||
+                           currentUser.user_metadata?.full_name ||
+                           currentUser.email?.split('@')[0] ||
+                           'User';
+
+        const { data: newProfile, error: createError } = await supabase
+          .from('user_profiles')
+          .insert([
+            {
+              id: currentUser.id,
+              email: currentUser.email,
+              display_name: displayName,
+              avatar_url: currentUser.user_metadata?.avatar_url || null,
+            },
+          ])
+          .select()
+          .single();
+
+        if (createError) {
+          console.error('❌ Failed to create user profile:', createError);
+        } else {
+          console.log('✅ User profile created successfully:', newProfile);
+          // Add to local state
+          setUserProfiles(prev => ({
+            ...prev,
+            [currentUser.id]: newProfile
+          }));
+        }
+      } else {
+        console.log('✅ User profile already exists:', existingProfile);
+        // Add to local state if not already there
+        setUserProfiles(prev => ({
+          ...prev,
+          [currentUser.id]: existingProfile
+        }));
+      }
+    } catch (err) {
+      console.error('💥 Error in ensureUserProfile:', err);
     }
   };
 
@@ -774,18 +839,11 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
         );
       });
       
-      // Ensure current user profile is available
+      // User profile should already be ensured by ensureUserProfile function
+      // If still missing, try to ensure it exists
       if (!userProfiles[user.id]) {
-        console.log('👤 Adding current user profile');
-        setUserProfiles(prev => ({
-          ...prev,
-          [user.id]: {
-            id: user.id,
-            display_name: 'You',
-            email: user.email ?? null,
-            avatar_url: null
-          }
-        }));
+        console.log('👤 User profile missing, ensuring it exists...');
+        ensureUserProfile(user);
       }
     }
   };
@@ -1131,6 +1189,20 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
     if (profile?.email) {
       return profile.email.split('@')[0];
     }
+    
+    // If this is the current user, use their info from auth
+    if (userId === user?.id && user) {
+      if (user.user_metadata?.display_name) {
+        return user.user_metadata.display_name;
+      }
+      if (user.user_metadata?.full_name) {
+        return user.user_metadata.full_name;
+      }
+      if (user.email) {
+        return user.email.split('@')[0];
+      }
+    }
+    
     return 'Unknown User';
   };
 

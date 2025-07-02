@@ -25,6 +25,11 @@ export function AuthForm({ mode, onToggleMode }: AuthFormProps) {
                        window.location.hostname === '127.0.0.1';
 
   const validateEmail = (email: string) => {
+    // Skip domain validation in development environment
+    if (isDevelopment) {
+      return null;
+    }
+    
     if (mode === 'signup' && !email.endsWith('@grepsr.com')) {
       return 'Sign up is restricted to @grepsr.com email addresses only';
     }
@@ -82,7 +87,7 @@ export function AuthForm({ mode, onToggleMode }: AuthFormProps) {
                 ? 'Sign in to your retrospective workspace' 
                 : 'Join the retrospective community'}
             </p>
-            {mode === 'signup' && (
+            {mode === 'signup' && !isDevelopment && (
               <p className="text-sm text-orange-600 mt-2 bg-orange-50 border border-orange-200 rounded-lg p-3">
                 <strong>Note:</strong> Sign up is restricted to @grepsr.com email addresses only
               </p>
@@ -150,7 +155,7 @@ export function AuthForm({ mode, onToggleMode }: AuthFormProps) {
             <div>
               <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
                 Email address
-                {mode === 'signup' && <span className="text-red-500 ml-1">(@grepsr.com only)</span>}
+                {mode === 'signup' && !isDevelopment && <span className="text-red-500 ml-1">(@grepsr.com only)</span>}
               </label>
               <div className="relative">
                 <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -160,7 +165,7 @@ export function AuthForm({ mode, onToggleMode }: AuthFormProps) {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   className="w-full pl-11 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent transition-colors"
-                  placeholder={mode === 'signup' ? 'Enter your @grepsr.com email' : 'Enter your email'}
+                  placeholder={mode === 'signup' && !isDevelopment ? 'Enter your @grepsr.com email' : 'Enter your email'}
                   required
                 />
               </div>

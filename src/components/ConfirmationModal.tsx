@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AlertTriangle, X, Trash2, Mail } from 'lucide-react';
 
 interface ConfirmationModalProps {
@@ -36,6 +36,15 @@ export function ConfirmationModal({
 }: ConfirmationModalProps) {
   const [confirmationText, setConfirmationText] = useState('');
   const [sendEmail, setSendEmail] = useState(emailCheckboxDefaultChecked);
+
+  // Reset form fields when modal opens or closes
+  useEffect(() => {
+    if (isOpen) {
+      // Clear previous values when modal opens
+      setConfirmationText('');
+      setSendEmail(emailCheckboxDefaultChecked);
+    }
+  }, [isOpen, emailCheckboxDefaultChecked]);
 
   if (!isOpen) return null;
 

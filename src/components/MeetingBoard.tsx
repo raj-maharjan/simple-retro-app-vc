@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Download, Users, Share2, Copy, CheckCircle, StopCircle, ChevronDown, UserPlus } from 'lucide-react';
+import { ArrowLeft, Download, Users, Share2, Copy, CheckCircle, StopCircle, ChevronDown, UserPlus, Sparkles } from 'lucide-react';
 import { DragDropContext, DropResult } from 'react-beautiful-dnd';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
@@ -8,6 +8,7 @@ import { NoteColumn } from './NoteColumn';
 import { Logo } from './Logo';
 import { ConfirmationModal } from './ConfirmationModal';
 import { InviteModal } from './InviteModal';
+import confetti from 'canvas-confetti';
 
 import { TopNavBar } from './TopNavBar';
 import { UserProfile as UserProfileComponent } from './UserProfile';
@@ -70,6 +71,9 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
   const liveParticipantsRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<Record<string, NodeJS.Timeout>>({});
   const channelRef = useRef<any>(null);
+  const [likingNotes, setLikingNotes] = useState<Set<string>>(new Set());
+  const [showConfettiMenu, setShowConfettiMenu] = useState(false);
+  const confettiMenuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetchMeeting();
@@ -137,6 +141,9 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
       if (liveParticipantsRef.current && !liveParticipantsRef.current.contains(event.target as Node)) {
         setShowLiveParticipants(false);
       }
+      if (confettiMenuRef.current && !confettiMenuRef.current.contains(event.target as Node)) {
+        setShowConfettiMenu(false);
+      }
     };
 
     document.addEventListener('mousedown', handleClickOutside);
@@ -169,20 +176,8 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
         if (!error && data) {
           setMeeting(data);
           
-          // Send meeting summary emails
-          console.log('📧 Auto-ended meeting, sending summary emails...');
-          try {
-            const emailData = await prepareMeetingEmailData(data, notes, userProfiles, null);
-            const emailResult = await sendMeetingSummaryEmails(emailData);
-            
-            if (emailResult.success) {
-              console.log(`✅ Meeting summary emails sent to ${emailResult.emailsSent}/${emailResult.totalParticipants} participants`);
-            } else {
-              console.error('❌ Failed to send meeting summary emails:', emailResult.error);
-            }
-          } catch (emailError) {
-            console.error('💥 Error sending meeting summary emails:', emailError);
-          }
+          // Auto-end without sending emails
+          console.log('🕒 Meeting auto-ended (no emails sent)');
         }
       } catch (err) {
         console.error('Error auto-ending meeting:', err);
@@ -437,10 +432,21 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
     console.log('🔗 Setting up real-time subscriptions for meeting:', meeting.id, 'user:', user.id);
     console.log('🔗 Real-time enabled:', !!supabase.realtime);
     
-    // Create a unique channel for this meeting with broadcast capabilities
+    // Clean up any existing channels with the same name
     const channelName = `meeting:${meeting.id}`;
-    console.log('🔗 Channel name:', channelName);
+    console.log('🔗 Setting up channel:', channelName);
     
+    try {
+      const existingChannel = supabase.getChannels().find(ch => ch.topic === channelName);
+      if (existingChannel) {
+        console.log('🧹 Removing existing channel...');
+        supabase.removeChannel(existingChannel);
+      }
+    } catch (err) {
+      console.error('Error cleaning up existing channel:', err);
+    }
+    
+    // Create a fresh channel for this meeting
     const channel = supabase.channel(channelName, {
       config: {
         broadcast: { self: false }, // Don't receive our own broadcasts
@@ -465,34 +471,33 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
           console.log('🟢 Real-time NOTE INSERT:', payload);
           const newNote = payload.new as any;
           
+          // For debugging: temporarily allow all notes to be processed
+          // Skip if this is our own note (handled by optimistic update)
+          if (newNote.created_by === user.id) {
+            console.log('⏭️ Skipping own note insert (handled by optimistic update)');
+            return;
+          }
+          
+          console.log('🌟 Processing note from another user:', {
+            noteId: newNote.id,
+            createdBy: newNote.created_by,
+            currentUser: user.id,
+            meetingId: newNote.meeting_id
+          });
+
           try {
             // Fetch complete note with likes
             const noteWithLikes = await fetchNoteWithLikes(newNote);
             console.log('📝 Adding note with likes:', noteWithLikes);
             
             setNotes(prev => {
-              // Skip if note already exists (avoid duplicates)
+              // Skip if note already exists
               if (prev.some(note => note.id === newNote.id)) {
                 console.log('⚠️ Note already exists, skipping');
                 return prev;
               }
-
-              // Replace optimistic note if it exists
-              const optimisticIndex = prev.findIndex(note => 
-                note.id.startsWith('temp-') && 
-                note.content === newNote.content && 
-                note.type === newNote.type &&
-                note.created_by === newNote.created_by
-              );
               
-              if (optimisticIndex !== -1) {
-                console.log('🔄 Replacing optimistic note with real note');
-                const updated = [...prev];
-                updated[optimisticIndex] = noteWithLikes;
-                return updated;
-              }
-              
-              console.log('✅ Adding new note to state');
+              console.log('✅ Adding new note to state from real-time');
               return [...prev, noteWithLikes];
             });
             
@@ -566,49 +571,60 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
           table: 'note_likes',
         },
         async (payload) => {
-          console.log('❤️ Real-time LIKE change:', payload);
+          console.log('❤️ Real-time LIKE change:', payload.eventType, payload);
           const likeData = (payload.new || payload.old) as { note_id?: string; user_id?: string };
           
           if (likeData?.note_id) {
+            console.log('🔄 Processing like change for note:', likeData.note_id, 'by user:', likeData.user_id);
+            
             try {
-              // Find the note and refresh its like data
-              setNotes(prev => {
-                const noteIndex = prev.findIndex(note => note.id === likeData.note_id);
-                if (noteIndex === -1) return prev;
-                
-                // Refresh the specific note's like information
-                fetchNoteWithLikes(prev[noteIndex]).then(updatedNote => {
-                  setNotes(current => current.map(note => 
-                    note.id === likeData.note_id ? updatedNote : note
-                  ));
-                });
-                
-                return prev; // Return current state while async update happens
+              // Find the note that was liked/unliked
+              const currentNote = notes.find(note => note.id === likeData.note_id);
+              if (!currentNote) {
+                console.log('⚠️ Note not found in current notes, skipping like update');
+                return;
+              }
+              
+              // Refresh the note's like data from database
+              const updatedNote = await fetchNoteWithLikes(currentNote);
+              console.log('✅ Refreshed note like data:', {
+                noteId: updatedNote.id,
+                likeCount: updatedNote.like_count,
+                userLiked: updatedNote.user_liked,
+                eventType: payload.eventType
               });
+              
+              // Update the specific note in state
+              setNotes(prev => prev.map(note => 
+                note.id === likeData.note_id ? updatedNote : note
+              ));
+              
             } catch (error) {
               console.error('❌ Error processing like change:', error);
             }
           }
         }
       )
-      .subscribe(async (status) => {
-         console.log('📡 Subscription status:', status);
-         
-         if (status === 'SUBSCRIBED') {
-           console.log('✅ Successfully subscribed to real-time updates');
-           setRealTimeStatus('connected');
-         } else if (status === 'CLOSED' || status === 'CHANNEL_ERROR') {
-           console.error('❌ Subscription error, attempting reconnection...');
-           setRealTimeStatus('disconnected');
-           setTimeout(() => {
-             if (meeting) {
-               console.log('🔄 Retrying subscription...');
-               setRealTimeStatus('connecting');
-               fetchNotes(); // Fallback refresh
-             }
-           }, 2000);
-         }
-       });
+
+      .subscribe((status) => {
+        console.log('📡 Subscription status:', status);
+        
+        if (status === 'SUBSCRIBED') {
+          console.log('✅ Successfully subscribed to real-time updates');
+          setRealTimeStatus('connected');
+        } else if (status === 'CHANNEL_ERROR') {
+          console.error('❌ Channel error, reconnecting...');
+          setRealTimeStatus('disconnected');
+          // Attempt to resubscribe after a short delay
+          setTimeout(() => {
+            channel.subscribe();
+            setRealTimeStatus('connecting');
+          }, 1000);
+        } else {
+          console.log(`📡 Subscription status: ${status}`);
+          setRealTimeStatus('connecting');
+        }
+      });
 
     // Set up presence tracking for active participants
     channel.on('presence', { event: 'sync' }, () => {
@@ -674,6 +690,77 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
           delete typingTimeoutRef.current[noteId];
         }
       }
+    });
+
+    // Listen for like changes via broadcast (for immediate updates)
+    channel.on('broadcast', { event: 'like_change' }, async (payload) => {
+      const { noteId, userId, liked, timestamp } = payload.payload;
+      console.log('❤️ Received like change broadcast:', { noteId, userId, liked, timestamp });
+      
+      // Don't process our own like broadcasts
+      if (userId === user.id) {
+        console.log('⏭️ Skipping own like broadcast');
+        return;
+      }
+      
+      try {
+        // Find the note and update it optimistically first for immediate feedback
+        const noteToUpdate = notes.find(note => note.id === noteId);
+        if (!noteToUpdate) {
+          console.log('⚠️ Note not found for like broadcast, skipping');
+          return;
+        }
+        
+        console.log('⚡ Applying immediate like update from broadcast');
+        // Apply immediate optimistic update
+        setNotes(prev => prev.map(note => {
+          if (note.id === noteId) {
+            const likeCountDelta = liked ? 1 : -1;
+            return {
+              ...note,
+              like_count: Math.max(0, note.like_count + likeCountDelta)
+            };
+          }
+          return note;
+        }));
+        
+        // Then refresh with actual database data after a short delay
+        setTimeout(async () => {
+          try {
+            const refreshedNote = await fetchNoteWithLikes(noteToUpdate);
+            console.log('🔄 Refreshed note after like broadcast:', {
+              noteId: refreshedNote.id,
+              likeCount: refreshedNote.like_count,
+              userLiked: refreshedNote.user_liked
+            });
+            
+            setNotes(prev => prev.map(note => 
+              note.id === noteId ? refreshedNote : note
+            ));
+          } catch (refreshError) {
+            console.error('❌ Error refreshing note after like broadcast:', refreshError);
+          }
+        }, 300); // Small delay to ensure database consistency
+        
+      } catch (error) {
+        console.error('❌ Error processing like change broadcast:', error);
+      }
+    });
+
+    // Listen for confetti celebrations via broadcast
+    channel.on('broadcast', { event: 'confetti' }, (payload) => {
+      const { userId, userName, style, timestamp } = payload.payload;
+      console.log('🎉 Received confetti celebration:', { userId, userName, style, timestamp });
+      
+      // Don't trigger confetti for our own celebrations
+      if (userId === user.id) {
+        console.log('⏭️ Skipping own confetti celebration');
+        return;
+      }
+      
+      console.log(`🎊 ${userName} started a celebration!`);
+      // Trigger confetti for other users with the same style
+      triggerConfetti(style || 'celebration');
     });
 
     // Track this user as present
@@ -764,6 +851,209 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
     };
   }, []);
 
+    // Confetti functions with different styles
+  const confettiStyles = {
+    celebration: {
+      name: 'Classic Party',
+      icon: '🎉',
+      function: () => {
+        const duration = 3000;
+        const animationEnd = Date.now() + duration;
+        const defaults = { startVelocity: 30, spread: 360, ticks: 60, zIndex: 1000 };
+
+        function randomInRange(min: number, max: number) {
+          return Math.random() * (max - min) + min;
+        }
+
+        const interval = setInterval(() => {
+          const timeLeft = animationEnd - Date.now();
+          if (timeLeft <= 0) return clearInterval(interval);
+
+          const particleCount = 50 * (timeLeft / duration);
+          
+          confetti(Object.assign({}, defaults, {
+            particleCount,
+            origin: { x: randomInRange(0.1, 0.3), y: Math.random() - 0.2 }
+          }));
+          
+          confetti(Object.assign({}, defaults, {
+            particleCount,
+            origin: { x: randomInRange(0.7, 0.9), y: Math.random() - 0.2 }
+          }));
+        }, 250);
+      }
+    },
+    cannon: {
+      name: 'Confetti Cannon',
+      icon: '💥',
+      function: () => {
+        const particleCount = 150;
+        const spread = 70;
+        const startVelocity = 45;
+
+        confetti({
+          particleCount,
+          spread,
+          startVelocity,
+          origin: { y: 0.6 },
+          zIndex: 1000
+        });
+      }
+    },
+    fireworks: {
+      name: 'Fireworks',
+      icon: '🎆',
+      function: () => {
+        const duration = 5000;
+        const animationEnd = Date.now() + duration;
+        const defaults = { startVelocity: 30, spread: 360, ticks: 60, zIndex: 1000 };
+
+        function randomInRange(min: number, max: number) {
+          return Math.random() * (max - min) + min;
+        }
+
+        const interval = setInterval(() => {
+          const timeLeft = animationEnd - Date.now();
+          if (timeLeft <= 0) return clearInterval(interval);
+
+          const particleCount = 50 * (timeLeft / duration);
+          confetti(Object.assign({}, defaults, {
+            particleCount,
+            origin: { x: randomInRange(0.1, 0.9), y: randomInRange(0.1, 0.3) },
+            colors: ['#ff0000', '#ff8000', '#ffff00', '#00ff00', '#0080ff', '#8000ff']
+          }));
+        }, 250);
+      }
+    },
+    snow: {
+      name: 'Snow Fall',
+      icon: '❄️',
+      function: () => {
+        const duration = 8000;
+        const animationEnd = Date.now() + duration;
+
+        const interval = setInterval(() => {
+          const timeLeft = animationEnd - Date.now();
+          if (timeLeft <= 0) return clearInterval(interval);
+
+          confetti({
+            particleCount: 1,
+            startVelocity: 0,
+            ticks: 200,
+            origin: { x: Math.random(), y: 0 },
+            colors: ['#ffffff', '#e3f2fd', '#bbdefb'],
+            shapes: ['circle'],
+            gravity: 0.3,
+            scalar: 0.6,
+            drift: 0,
+            zIndex: 1000
+          });
+        }, 50);
+      }
+    },
+    rainbow: {
+      name: 'Rainbow Burst',
+      icon: '🌈',
+      function: () => {
+        const end = Date.now() + 3000;
+        const colors = ['#ff0000', '#ff8000', '#ffff00', '#80ff00', '#00ff00', '#00ff80', '#00ffff', '#0080ff', '#0000ff', '#8000ff', '#ff00ff', '#ff0080'];
+
+        (function frame() {
+          confetti({
+            particleCount: 3,
+            angle: 60,
+            spread: 55,
+            origin: { x: 0 },
+            colors: colors,
+            zIndex: 1000
+          });
+          confetti({
+            particleCount: 3,
+            angle: 120,
+            spread: 55,
+            origin: { x: 1 },
+            colors: colors,
+            zIndex: 1000
+          });
+
+          if (Date.now() < end) {
+            requestAnimationFrame(frame);
+          }
+        }());
+      }
+    },
+    golden: {
+      name: 'Golden Shower',
+      icon: '🏆',
+      function: () => {
+        const particleCount = 100;
+        const spread = 160;
+        const startVelocity = 30;
+        
+        confetti({
+          particleCount,
+          spread,
+          startVelocity,
+          origin: { y: 0.2 },
+          colors: ['#FFD700', '#FFED4E', '#FFC107', '#FF8F00'],
+          shapes: ['square'],
+          scalar: 1.2,
+          zIndex: 1000
+        });
+        
+        setTimeout(() => {
+          confetti({
+            particleCount: 50,
+            spread: 120,
+            startVelocity: 25,
+            origin: { y: 0.3 },
+            colors: ['#FFD700', '#FFED4E', '#FFC107'],
+            shapes: ['circle'],
+            scalar: 0.8,
+            zIndex: 1000
+          });
+        }, 300);
+      }
+    }
+  };
+
+  const triggerConfetti = (style: string = 'celebration') => {
+    const confettiStyle = confettiStyles[style as keyof typeof confettiStyles];
+    if (confettiStyle) {
+      confettiStyle.function();
+    } else {
+      confettiStyles.celebration.function();
+    }
+  };
+
+  const broadcastConfetti = (style: string = 'celebration') => {
+    if (!channelRef.current || !user || !meeting) return;
+    
+    const userName = getUserDisplayName(user.id);
+    console.log('🎉 Broadcasting confetti celebration:', { userId: user.id, userName, style });
+    
+    channelRef.current.send({
+      type: 'broadcast',
+      event: 'confetti',
+      payload: {
+        userId: user.id,
+        userName,
+        style,
+        timestamp: Date.now()
+      }
+    });
+  };
+
+  const handleConfettiClick = (style: string = 'celebration') => {
+    if (meeting?.status === 'ended') {
+      return;
+    }
+    
+    triggerConfetti(style);
+    broadcastConfetti(style);
+    setShowConfettiMenu(false);
+  };
+
   const addNote = async (type: 'glad' | 'mad' | 'sad' | 'action', content: string) => {
     if (!meeting || !user) {
       console.error('❌ Missing meeting or user:', { meeting: !!meeting, user: !!user });
@@ -777,28 +1067,6 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
     }
 
     console.log('📝 Adding note:', { meeting_id: meeting.id, content, type, created_by: user.id });
-
-    // Create optimistic note with temporary ID
-    const tempId = `temp-${Date.now()}-${Math.random()}`;
-    const optimisticNote: Note = {
-      id: tempId,
-      content,
-      type,
-      created_by: user.id,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-      like_count: 0,
-      user_liked: false
-    };
-
-    console.log('🔄 Adding optimistic note:', optimisticNote);
-    // Add optimistic note immediately
-    setNotes(prev => {
-      console.log('🔄 Current notes count:', prev.length);
-      const newNotes = [...prev, optimisticNote];
-      console.log('🔄 New notes count:', newNotes.length);
-      return newNotes;
-    });
 
     console.log('💾 Inserting note to database...');
     const { data, error } = await supabase
@@ -816,35 +1084,29 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
 
     if (error) {
       console.error('❌ Error adding note to database:', error);
-      // Remove optimistic note on error
-      setNotes(prev => {
-        console.log('🔄 Removing optimistic note due to error');
-        return prev.filter(note => note.id !== tempId);
-      });
-      
       if (error.message.includes('active')) {
         alert('This meeting has ended. You can no longer add notes.');
       } else {
         alert('Failed to add note: ' + error.message);
       }
-    } else {
-      console.log('✅ Note added to database successfully:', data);
-      // Replace optimistic note with real note (with correct ID)
-      setNotes(prev => {
-        console.log('🔄 Replacing optimistic note with real note:', data.id);
-        return prev.map(note => 
-          note.id === tempId 
-            ? { ...data, like_count: 0, user_liked: false }
-            : note
-        );
-      });
-      
-      // User profile should already be ensured by ensureUserProfile function
-      // If still missing, try to ensure it exists
-      if (!userProfiles[user.id]) {
-        console.log('👤 User profile missing, ensuring it exists...');
-        ensureUserProfile(user);
-      }
+      return;
+    }
+
+    console.log('✅ Note added to database successfully:', data);
+    
+    // Add the new note to state immediately (optimistic update)
+    const newNote = { 
+      ...data, 
+      like_count: 0, 
+      user_liked: false 
+    };
+    
+    setNotes(prev => [...prev, newNote]);
+    
+    // Ensure user profile exists
+    if (!userProfiles[user.id]) {
+      console.log('👤 User profile missing, ensuring it exists...');
+      ensureUserProfile(user);
     }
   };
 
@@ -990,8 +1252,96 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
 
     console.log('Toggling like for note:', { noteId, userId: user.id, currentlyLiked: note.user_liked });
 
+    // If already processing this note, queue the toggle
+    if (likingNotes.has(noteId)) {
+      console.log('Note already being processed, queuing toggle...');
+      // Optimistically toggle the UI state again (handles rapid clicks)
+      setNotes(prev => prev.map(n => 
+        n.id === noteId 
+          ? { 
+              ...n, 
+              user_liked: !n.user_liked,
+              like_count: n.user_liked ? n.like_count - 1 : n.like_count + 1
+            }
+          : n
+      ));
+      return;
+    }
+
+    // Mark note as being processed
+    setLikingNotes(prev => new Set([...prev, noteId]));
+
+    // Optimistically update the UI
+    const initialLikedState = note.user_liked;
+    const newLikedState = !initialLikedState;
+    setNotes(prev => prev.map(n => 
+      n.id === noteId 
+        ? { 
+            ...n, 
+            user_liked: newLikedState,
+            like_count: initialLikedState ? n.like_count - 1 : n.like_count + 1
+          }
+        : n
+    ));
+
+    // Broadcast the like change immediately to other users
+    if (channelRef.current) {
+      console.log('📡 Broadcasting like change:', { noteId, userId: user.id, liked: newLikedState });
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'like_change',
+        payload: {
+          noteId,
+          userId: user.id,
+          liked: newLikedState,
+          timestamp: Date.now()
+        }
+      });
+    }
+
     try {
-      if (note.user_liked) {
+      if (newLikedState) {
+        // Like the note - use upsert to handle duplicates gracefully
+        const { error } = await supabase
+          .from('note_likes')
+          .upsert([
+            {
+              note_id: noteId,
+              user_id: user.id,
+            },
+          ], {
+            onConflict: 'note_id,user_id',
+            ignoreDuplicates: false // We want to know if it already exists
+          });
+
+        if (error) {
+          if (error.message.includes('duplicate key')) {
+            console.log('Note was already liked (duplicate click handled gracefully)');
+            // The like already exists, ensure UI shows liked state
+            setNotes(prev => prev.map(n => 
+              n.id === noteId 
+                ? { ...n, user_liked: true, like_count: Math.max(0, n.like_count) }
+                : n
+            ));
+          } else {
+            console.error('Error liking note:', error);
+            // Revert to original state
+            setNotes(prev => prev.map(n => 
+              n.id === noteId 
+                ? { ...n, user_liked: initialLikedState, like_count: initialLikedState ? n.like_count + 1 : n.like_count - 1 }
+                : n
+            ));
+            
+            if (error.message.includes('active')) {
+              alert('This meeting has ended. You can no longer like notes.');
+            } else {
+              alert('Failed to like note. Please try again.');
+            }
+          }
+        } else {
+          console.log('Note liked successfully');
+        }
+      } else {
         // Unlike the note
         const { error } = await supabase
           .from('note_likes')
@@ -1001,37 +1351,51 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
 
         if (error) {
           console.error('Error unliking note:', error);
-          alert('Failed to unlike note: ' + error.message);
-        } else {
-          console.log('Note unliked successfully');
-          // Real-time subscription will handle updating the like count
-        }
-      } else {
-        // Like the note
-        const { error } = await supabase
-          .from('note_likes')
-          .insert([
-            {
-              note_id: noteId,
-              user_id: user.id,
-            },
-          ]);
-
-        if (error) {
-          console.error('Error liking note:', error);
+          // Revert to original state
+          setNotes(prev => prev.map(n => 
+            n.id === noteId 
+              ? { ...n, user_liked: initialLikedState, like_count: initialLikedState ? n.like_count + 1 : n.like_count - 1 }
+              : n
+          ));
+          
           if (error.message.includes('active')) {
             alert('This meeting has ended. You can no longer like notes.');
           } else {
-            alert('Failed to like note: ' + error.message);
+            alert('Failed to unlike note. Please try again.');
           }
         } else {
-          console.log('Note liked successfully');
-          // Real-time subscription will handle updating the like count
+          console.log('Note unliked successfully');
         }
       }
+
+      // After the database operation, refresh the note to ensure consistency
+      setTimeout(async () => {
+        try {
+          const refreshedNote = await fetchNoteWithLikes(note);
+          setNotes(prev => prev.map(n => n.id === noteId ? refreshedNote : n));
+        } catch (refreshError) {
+          console.error('Error refreshing note state:', refreshError);
+        }
+      }, 100);
+
     } catch (err) {
       console.error('Error toggling like:', err);
+      // Revert to original state
+      setNotes(prev => prev.map(n => 
+        n.id === noteId 
+          ? { ...n, user_liked: initialLikedState, like_count: initialLikedState ? n.like_count + 1 : n.like_count - 1 }
+          : n
+      ));
       alert('Failed to toggle like. Please try again.');
+    } finally {
+      // Remove note from processing set after a short delay to prevent rapid re-processing
+      setTimeout(() => {
+        setLikingNotes(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(noteId);
+          return newSet;
+        });
+      }, 200);
     }
   };
 
@@ -1241,6 +1605,8 @@ Are you sure you want to end this meeting?`;
     console.log('Active participants:', activeParticipants);
     console.log('Live participants:', liveParticipants);
     console.log('Notes count:', notes.length);
+    console.log('Channel reference:', channelRef.current);
+    console.log('Available channels:', supabase.getChannels().map(ch => ch.topic));
     
     if (typeof window !== 'undefined') {
       (window as any).debugMeeting = {
@@ -1250,9 +1616,21 @@ Are you sure you want to end this meeting?`;
         activeParticipants,
         liveParticipants,
         notes,
-        testRealTime
+        testRealTime,
+        forceRefreshNotes: () => {
+          console.log('🔄 Force refreshing notes...');
+          fetchNotes();
+        },
+        testInsertNote: async () => {
+          console.log('🧪 Testing note insert...');
+          if (meeting && user) {
+            await addNote('glad', 'Test note from console - ' + new Date().toISOString());
+          }
+        }
       };
       console.log('🔧 Debug info available at window.debugMeeting');
+      console.log('🔧 Try: window.debugMeeting.testInsertNote() to test adding a note');
+      console.log('🔧 Try: window.debugMeeting.forceRefreshNotes() to force refresh');
     }
   };
 
@@ -1661,6 +2039,40 @@ Are you sure you want to end this meeting?`;
         </DragDropContext>
       </div>
 
+      {/* Floating Confetti Button with Dropdown */}
+      {!isMeetingEnded && (
+        <div className="fixed left-6 top-1/2 transform -translate-y-1/2 z-50" ref={confettiMenuRef}>
+          <button
+            onClick={() => setShowConfettiMenu(!showConfettiMenu)}
+            className="bg-gradient-to-r from-yellow-400 via-orange-500 to-pink-500 hover:from-yellow-500 hover:via-orange-600 hover:to-pink-600 text-white p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 animate-pulse hover:animate-none"
+            title="Choose a celebration style! 🎉"
+          >
+            <Sparkles className="w-6 h-6" />
+          </button>
+
+          {/* Confetti Style Dropdown */}
+          {showConfettiMenu && (
+            <div className="absolute left-full ml-4 top-1/2 transform -translate-y-1/2 bg-white rounded-xl shadow-lg border border-gray-200 py-2 min-w-48">
+              <div className="px-3 py-2 border-b border-gray-100">
+                <h4 className="font-medium text-gray-900 text-sm">Choose Celebration</h4>
+              </div>
+              <div className="max-h-64 overflow-y-auto">
+                {Object.entries(confettiStyles).map(([key, style]) => (
+                  <button
+                    key={key}
+                    onClick={() => handleConfettiClick(key)}
+                    className="w-full px-3 py-2 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+                  >
+                    <span className="text-lg">{style.icon}</span>
+                    <span className="text-sm text-gray-700">{style.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* User Profile Modal */}
       {showProfile && (
         <UserProfileComponent onClose={() => setShowProfile(false)} />
@@ -1691,7 +2103,7 @@ Are you sure you want to end this meeting?`;
         loading={endingMeeting}
         showEmailCheckbox={true}
         emailCheckboxLabel="Send meeting summary email to all participants"
-        emailCheckboxDefaultChecked={true}
+        emailCheckboxDefaultChecked={false}
       />
 
       {/* Real-time Debugger - Disabled (functionality working) */}

@@ -63,98 +63,43 @@ export function Dashboard({ onJoinMeeting }: DashboardProps) {
       fetchProfile();
       fetchMeetings();
       
-      // Set up real-time subscription for meetings changes
-      console.log('🔄 Setting up real-time subscription for user:', user.id);
+      // Check for expired meetings when user logs in (another page load scenario)
+      checkExpiredMeetings();
+      
+      // Set up simplified real-time subscription for meetings changes
+      console.log('🔄 Setting up simplified real-time subscription for user:', user.id);
       
       const meetingsSubscription = supabase
-        .channel(`user_meetings:${user.id}`)
+        .channel(`user_meetings_simple:${user.id}`)
         .on(
           'postgres_changes',
           {
-            event: 'UPDATE',
+            event: '*', // Listen to all events (INSERT, UPDATE, DELETE)
             schema: 'public',
             table: 'meetings'
-            // Remove the filter to listen to all meetings, we'll filter in the callback
           },
           (payload) => {
-            console.log('Meeting updated in real-time:', payload);
-            const updatedMeeting = payload.new as Meeting;
+            console.log('📡 Meeting change detected:', payload.eventType, (payload.new as any)?.meeting_code || (payload.old as any)?.meeting_code);
             
-            // Check if this meeting is in our current list (either hosted or contributed)
-            setMeetings(prev => {
-              const existingMeetingIndex = prev.findIndex(meeting => meeting.id === updatedMeeting.id);
-              if (existingMeetingIndex >= 0) {
-                // Update the existing meeting while preserving the user_role
-                const updatedMeetings = [...prev];
-                updatedMeetings[existingMeetingIndex] = {
-                  ...updatedMeeting,
-                  user_role: updatedMeetings[existingMeetingIndex].user_role
-                };
-                return updatedMeetings;
-              }
-              return prev;
-            });
-          }
-        )
-        .on(
-          'postgres_changes',
-          {
-            event: 'INSERT',
-            schema: 'public',
-            table: 'meetings'
-            // Listen to all new meetings, we'll check if user created it
-          },
-          (payload) => {
-            console.log('Meeting created in real-time:', payload);
-            const newMeeting = payload.new as Meeting;
-            
-            // Only add if the user created this meeting
-            if (newMeeting.created_by === user.id) {
-              setMeetings(prev => [{ ...newMeeting, user_role: 'host' as const }, ...prev]);
-            }
-          }
-        )
-        .on(
-          'postgres_changes',
-          {
-            event: 'DELETE',
-            schema: 'public',
-            table: 'meetings'
-            // Removed filter for DELETE events as they sometimes don't work with filters
-          },
-          (payload) => {
-            console.log('🗑️ Meeting deleted in real-time:', payload);
-            console.log('Delete payload old:', payload.old);
-            
-            // Handle case where payload.old might be null or undefined  
-            const deletedMeetingId = payload.old?.id;
-            
-            if (deletedMeetingId) {
-              console.log('Removing meeting from UI:', deletedMeetingId);
-              // Remove the deleted meeting from the list if it exists
-              setMeetings(prev => {
-                const newMeetings = prev.filter(meeting => meeting.id !== deletedMeetingId);
-                if (newMeetings.length !== prev.length) {
-                  console.log('Updated meetings list:', newMeetings.length, 'meetings');
-                }
-                return newMeetings;
-              });
-            } else {
-              console.error('No meeting ID found in delete payload');
-            }
+            // Simple solution: refetch meetings on any change
+            // This avoids complex state management and ensures consistency
+            setTimeout(() => {
+              fetchMeetings();
+            }, 500); // Small delay to ensure database consistency
           }
         )
         .subscribe(
           (status) => {
-            console.log('📡 Real-time subscription status:', status);
+            console.log('📡 Subscription status:', status);
+            if (status === 'SUBSCRIBED') {
+              console.log('✅ Real-time connection established');
+            } else if (status === 'CHANNEL_ERROR') {
+              console.error('❌ Real-time connection error');
+            }
           }
         );
       
-      // Set up interval to check for expired meetings every minute
-      const interval = setInterval(checkExpiredMeetings, 60000);
-      
       return () => {
-        clearInterval(interval);
         supabase.removeChannel(meetingsSubscription);
       };
     }
@@ -364,13 +309,14 @@ export function Dashboard({ onJoinMeeting }: DashboardProps) {
     if (!user) return;
 
     try {
-      // Get active meetings older than 2 hours
+      // Get ALL active meetings older than 2 hours
       const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+      
+      console.log('🔍 Checking for expired meetings created before:', twoHoursAgo);
       
       const { data: expiredMeetings, error } = await supabase
         .from('meetings')
         .select('*')
-        .eq('created_by', user.id)
         .eq('status', 'active')
         .lt('created_at', twoHoursAgo);
 
@@ -396,68 +342,8 @@ export function Dashboard({ onJoinMeeting }: DashboardProps) {
             .single();
 
           if (updatedMeeting) {
-            // Send meeting summary emails for auto-expired meeting
-            console.log(`📧 Auto-expired meeting ${meeting.meeting_code}, sending summary emails...`);
-            try {
-              // Fetch meeting notes and participants
-              const { data: notesData } = await supabase
-                .from('notes')
-                .select('*')
-                .eq('meeting_id', meeting.id);
-
-              if (notesData && notesData.length > 0) {
-                // Get notes with like counts
-                const notesWithLikes = await Promise.all(
-                  notesData.map(async (note) => {
-                    const { count: likeCount } = await supabase
-                      .from('note_likes')
-                      .select('*', { count: 'exact', head: true })
-                      .eq('note_id', note.id);
-
-                    return {
-                      ...note,
-                      like_count: likeCount || 0,
-                    };
-                  })
-                );
-
-                // Fetch user profiles for participants
-                const participantIds = [...new Set(notesData.map(note => note.created_by))];
-                const { data: profilesData } = await supabase
-                  .from('user_profiles')
-                  .select('*')
-                  .in('id', participantIds);
-
-                const userProfiles: Record<string, any> = {};
-                profilesData?.forEach(profile => {
-                  userProfiles[profile.id] = profile;
-                });
-
-                // Add host profile if not already included
-                if (!userProfiles[updatedMeeting.created_by]) {
-                  const { data: hostProfile } = await supabase
-                    .from('user_profiles')
-                    .select('*')
-                    .eq('id', updatedMeeting.created_by)
-                    .single();
-                  
-                  if (hostProfile) {
-                    userProfiles[updatedMeeting.created_by] = hostProfile;
-                  }
-                }
-
-                const emailData = await prepareMeetingEmailData(updatedMeeting, notesWithLikes, userProfiles, null);
-                const emailResult = await sendMeetingSummaryEmails(emailData);
-                
-                if (emailResult.success) {
-                  console.log(`✅ Auto-expiration emails sent to ${emailResult.emailsSent}/${emailResult.totalParticipants} participants for meeting ${meeting.meeting_code}`);
-                } else {
-                  console.error(`❌ Failed to send auto-expiration emails for meeting ${meeting.meeting_code}:`, emailResult.error);
-                }
-              }
-            } catch (emailError) {
-              console.error(`💥 Error sending auto-expiration emails for meeting ${meeting.meeting_code}:`, emailError);
-            }
+            // Auto-expire without sending emails
+            console.log(`🕒 Auto-expired meeting ${meeting.meeting_code} (no emails sent)`)
           }
         }
         
@@ -1215,7 +1101,7 @@ Are you sure you want to end this meeting?`;
         loading={endingMeeting !== null}
         showEmailCheckbox={true}
         emailCheckboxLabel="Send meeting summary email to all participants"
-        emailCheckboxDefaultChecked={true}
+        emailCheckboxDefaultChecked={false}
       />
 
       {/* Delete Confirmation Modal */}

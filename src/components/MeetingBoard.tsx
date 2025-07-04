@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Download, Users, Share2, Copy, CheckCircle, StopCircle, ChevronDown, UserPlus, Sparkles } from 'lucide-react';
+import { ArrowLeft, Download, Users, Share2, Copy, CheckCircle, StopCircle, ChevronDown, UserPlus, Sparkles, Pencil } from 'lucide-react';
+import { ReactSketchCanvas } from 'react-sketch-canvas';
 import { DragDropContext, DropResult } from 'react-beautiful-dnd';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
@@ -74,6 +75,9 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
   const [likingNotes, setLikingNotes] = useState<Set<string>>(new Set());
   const [showConfettiMenu, setShowConfettiMenu] = useState(false);
   const confettiMenuRef = useRef<HTMLDivElement>(null);
+  const [showSketchPad, setShowSketchPad] = useState(false);
+  const [sketchData, setSketchData] = useState<string | null>(null);
+  const sketchCanvasRef = useRef<any>(null);
 
   useEffect(() => {
     fetchMeeting();
@@ -456,6 +460,13 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
 
     // Store channel reference for broadcasting
     channelRef.current = channel;
+
+    // Subscribe to sketch pad updates
+    channel.on('broadcast', { event: 'sketch_update' }, ({ payload }) => {
+      if (payload.sketchData !== undefined) {
+        setSketchData(payload.sketchData);
+      }
+    });
 
     // Listen for database changes on notes table
     channel
@@ -1711,6 +1722,30 @@ Are you sure you want to end this meeting?`;
   const isHost = meeting && user && meeting.created_by === user.id;
   const isMeetingEnded = meeting?.status === 'ended';
 
+  const broadcastSketchUpdate = (data: string | null) => {
+    if (!channelRef.current) return;
+    channelRef.current.send({
+      type: 'broadcast',
+      event: 'sketch_update',
+      payload: { sketchData: data }
+    });
+  };
+
+  const handleSketchChange = async () => {
+    if (!sketchCanvasRef.current) return;
+    const data = await sketchCanvasRef.current.exportImage("svg");
+    setSketchData(data);
+    broadcastSketchUpdate(data);
+  };
+
+  const toggleSketchPad = () => {
+    setShowSketchPad(!showSketchPad);
+    if (!showSketchPad) {
+      setSketchData(null);
+      broadcastSketchUpdate(null);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-50 via-blue-50 to-indigo-100">
       {/* Top Navigation Bar */}
@@ -1721,6 +1756,47 @@ Are you sure you want to end this meeting?`;
       />
       
       <div className="max-w-8xl mx-auto px-4 py-6">
+        {/* Sketch Pad Overlay */}
+        {(showSketchPad || sketchData) && (
+          <div className="fixed inset-0 z-40 pointer-events-none">
+            {showSketchPad ? (
+              <>
+                <ReactSketchCanvas
+                  ref={sketchCanvasRef}
+                  width="100vw"
+                  height="100vh"
+                  strokeWidth={4}
+                  strokeColor="red"
+                  canvasColor="transparent"
+                  backgroundImage={sketchData || ""}
+                  exportWithBackgroundImage={true}
+                  onStroke={handleSketchChange}
+                  className="pointer-events-auto"
+                  style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+                />
+                <button
+                  onClick={() => {
+                    setSketchData(null);
+                    broadcastSketchUpdate(null);
+                    toggleSketchPad();
+                  }}
+                  className="fixed top-4 right-4 bg-white rounded-full p-2 shadow-lg pointer-events-auto hover:bg-gray-100"
+                >
+                  <span className="sr-only">Clear sketch</span>
+                  ×
+                </button>
+              </>
+            ) : (
+              <img 
+                src={sketchData || undefined} 
+                alt="Live sketch" 
+                className="w-full h-full object-contain pointer-events-none"
+                style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
+              />
+            )}
+          </div>
+        )}
+
         {/* Header */}
         <div className="bg-white rounded-2xl shadow-lg p-6 mb-6">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
@@ -2039,37 +2115,66 @@ Are you sure you want to end this meeting?`;
         </DragDropContext>
       </div>
 
-      {/* Floating Confetti Button with Dropdown */}
+      {/* Floating Action Buttons */}
       {!isMeetingEnded && (
-        <div className="fixed left-6 top-1/2 transform -translate-y-1/2 z-50" ref={confettiMenuRef}>
-          <button
-            onClick={() => setShowConfettiMenu(!showConfettiMenu)}
-            className="bg-gradient-to-r from-yellow-400 via-orange-500 to-pink-500 hover:from-yellow-500 hover:via-orange-600 hover:to-pink-600 text-white p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 animate-pulse hover:animate-none"
-            title="Choose a celebration style! 🎉"
-          >
-            <Sparkles className="w-6 h-6" />
-          </button>
+        <div className="fixed left-6 top-1/2 transform -translate-y-1/2 z-50 flex flex-col gap-4">
+          {/* Confetti Button */}
+          <div className="relative" ref={confettiMenuRef}>
+            <button
+              onClick={() => setShowConfettiMenu(!showConfettiMenu)}
+              className="bg-gradient-to-r from-yellow-400 via-orange-500 to-pink-500 hover:from-yellow-500 hover:via-orange-600 hover:to-pink-600 text-white p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110 animate-pulse hover:animate-none"
+              title="Celebrate with Confetti! 🎉"
+            >
+              <Sparkles className="w-6 h-6" />
+            </button>
 
-          {/* Confetti Style Dropdown */}
-          {showConfettiMenu && (
-            <div className="absolute left-full ml-4 top-1/2 transform -translate-y-1/2 bg-white rounded-xl shadow-lg border border-gray-200 py-2 min-w-48">
-              <div className="px-3 py-2 border-b border-gray-100">
-                <h4 className="font-medium text-gray-900 text-sm">Choose Celebration</h4>
+            {/* Confetti Style Dropdown */}
+            {showConfettiMenu && (
+              <div className="absolute left-full ml-4 top-1/2 transform -translate-y-1/2 bg-white rounded-xl shadow-lg border border-gray-200 py-2 min-w-48">
+                <div className="px-3 py-2 border-b border-gray-100">
+                  <h4 className="font-medium text-gray-900 text-sm">Choose Celebration</h4>
+                </div>
+                <div className="max-h-64 overflow-y-auto">
+                  {Object.entries(confettiStyles).map(([key, style]) => (
+                    <button
+                      key={key}
+                      onClick={() => handleConfettiClick(key)}
+                      className="w-full px-3 py-2 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+                    >
+                      <span className="text-lg">{style.icon}</span>
+                      <span className="text-sm text-gray-700">{style.name}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div className="max-h-64 overflow-y-auto">
-                {Object.entries(confettiStyles).map(([key, style]) => (
-                  <button
-                    key={key}
-                    onClick={() => handleConfettiClick(key)}
-                    className="w-full px-3 py-2 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
-                  >
-                    <span className="text-lg">{style.icon}</span>
-                    <span className="text-sm text-gray-700">{style.name}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+            )}
+          </div>
+
+          {/* Sketch Pad Buttons */}
+          <div className="flex flex-col gap-2">
+            <button
+              onClick={toggleSketchPad}
+              className="bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-700 hover:to-teal-700 text-white p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110"
+              title="Draw and collaborate in real-time! ✏️"
+            >
+              <Pencil className="w-6 h-6" />
+            </button>
+            {(showSketchPad || sketchData) && (
+              <button
+                onClick={() => {
+                  setSketchData(null);
+                  broadcastSketchUpdate(null);
+                  if (showSketchPad && sketchCanvasRef.current) {
+                    sketchCanvasRef.current.clearCanvas();
+                  }
+                }}
+                className="bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-700 hover:to-orange-700 text-white p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110"
+                title="Clear Sketch"
+              >
+                <span className="text-xl font-bold">×</span>
+              </button>
+            )}
+          </div>
         </div>
       )}
 

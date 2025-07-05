@@ -644,10 +644,6 @@ You are about to end the meeting:
 This action will:
 • Stop the active retrospective session
 • Prevent participants from adding or editing notes
-• Preserve all existing notes and data for viewing/export
-• Allow you to restart the meeting later if needed
-
-The meeting data will remain accessible but no further changes can be made.
 
 Are you sure you want to end this meeting?`;
   };

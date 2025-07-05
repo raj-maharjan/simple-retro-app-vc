@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Download, Users, Share2, Copy, CheckCircle, StopCircle, ChevronDown, UserPlus, Sparkles, Pencil } from 'lucide-react';
+import { ArrowLeft, Download, Users, Share2, Copy, CheckCircle, StopCircle, ChevronDown, UserPlus, Sparkles, Pencil, Eraser } from 'lucide-react';
 import { ReactSketchCanvas } from 'react-sketch-canvas';
 import { DragDropContext, DropResult } from 'react-beautiful-dnd';
 import { useAuth } from '../contexts/AuthContext';
@@ -77,7 +77,10 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
   const confettiMenuRef = useRef<HTMLDivElement>(null);
   const [showSketchPad, setShowSketchPad] = useState(false);
   const [sketchData, setSketchData] = useState<string | null>(null);
+  const [sketchColor, setSketchColor] = useState('#ef4444'); // Default to red
+  const [showColorPicker, setShowColorPicker] = useState(false);
   const sketchCanvasRef = useRef<any>(null);
+  const colorPickerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     fetchMeeting();
@@ -147,6 +150,9 @@ export function MeetingBoard({ meetingCode, onBack }: MeetingBoardProps) {
       }
       if (confettiMenuRef.current && !confettiMenuRef.current.contains(event.target as Node)) {
         setShowConfettiMenu(false);
+      }
+      if (colorPickerRef.current && !colorPickerRef.current.contains(event.target as Node)) {
+        setShowColorPicker(false);
       }
     };
 
@@ -1738,12 +1744,30 @@ Are you sure you want to end this meeting?`;
     broadcastSketchUpdate(data);
   };
 
+  const sketchColors = [
+    { name: 'Red', color: '#ef4444' },
+    { name: 'Blue', color: '#3b82f6' },
+    { name: 'Green', color: '#10b981' },
+    { name: 'Yellow', color: '#f59e0b' },
+    { name: 'Purple', color: '#8b5cf6' },
+    { name: 'Pink', color: '#ec4899' },
+    { name: 'Orange', color: '#f97316' },
+    { name: 'Black', color: '#1f2937' },
+  ];
+
   const toggleSketchPad = () => {
-    setShowSketchPad(!showSketchPad);
     if (!showSketchPad) {
-      setSketchData(null);
-      broadcastSketchUpdate(null);
+      setShowColorPicker(true);
+    } else {
+      setShowSketchPad(false);
+      setShowColorPicker(false);
     }
+  };
+
+  const selectColorAndStart = (color: string) => {
+    setSketchColor(color);
+    setShowSketchPad(true);
+    setShowColorPicker(false);
   };
 
   return (
@@ -1766,7 +1790,7 @@ Are you sure you want to end this meeting?`;
                   width="100vw"
                   height="100vh"
                   strokeWidth={4}
-                  strokeColor="red"
+                  strokeColor={sketchColor}
                   canvasColor="transparent"
                   backgroundImage={sketchData || ""}
                   exportWithBackgroundImage={true}
@@ -1774,17 +1798,6 @@ Are you sure you want to end this meeting?`;
                   className="pointer-events-auto"
                   style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 }}
                 />
-                <button
-                  onClick={() => {
-                    setSketchData(null);
-                    broadcastSketchUpdate(null);
-                    toggleSketchPad();
-                  }}
-                  className="fixed top-4 right-4 bg-white rounded-full p-2 shadow-lg pointer-events-auto hover:bg-gray-100"
-                >
-                  <span className="sr-only">Clear sketch</span>
-                  ×
-                </button>
               </>
             ) : (
               <img 
@@ -2151,14 +2164,43 @@ Are you sure you want to end this meeting?`;
           </div>
 
           {/* Sketch Pad Buttons */}
-          <div className="flex flex-col gap-2">
-            <button
-              onClick={toggleSketchPad}
-              className="bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-700 hover:to-teal-700 text-white p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110"
-              title="Draw and collaborate in real-time! ✏️"
-            >
-              <Pencil className="w-6 h-6" />
-            </button>
+          <div className="flex flex-col gap-2" ref={colorPickerRef}>
+            <div className="relative">
+              <button
+                onClick={toggleSketchPad}
+                className="bg-gradient-to-r from-green-600 to-teal-600 hover:from-green-700 hover:to-teal-700 text-white p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110"
+                title="Draw and collaborate in real-time! ✏️"
+              >
+                <Pencil className="w-6 h-6" />
+              </button>
+              
+              {/* Color Picker */}
+              {showColorPicker && (
+                <div className="absolute left-full ml-4 top-1/2 transform -translate-y-1/2 bg-white rounded-xl shadow-lg border border-gray-200 py-3 px-4 min-w-56">
+                  <div className="mb-3">
+                    <h4 className="font-medium text-gray-900 text-sm">Choose Drawing Color</h4>
+                    <p className="text-xs text-gray-500 mt-1">Select a color to start drawing</p>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {sketchColors.map((colorOption) => (
+                      <button
+                        key={colorOption.color}
+                        onClick={() => selectColorAndStart(colorOption.color)}
+                        className="w-10 h-10 rounded-full border-2 border-gray-300 hover:border-gray-400 transition-all hover:scale-110 flex items-center justify-center"
+                        style={{ backgroundColor: colorOption.color }}
+                        title={`Draw with ${colorOption.name}`}
+                      >
+                        {sketchColor === colorOption.color && (
+                          <div className="w-4 h-4 rounded-full bg-white/80 flex items-center justify-center">
+                            <div className="w-2 h-2 rounded-full bg-gray-800"></div>
+                          </div>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
             {(showSketchPad || sketchData) && (
               <button
                 onClick={() => {
@@ -2171,7 +2213,7 @@ Are you sure you want to end this meeting?`;
                 className="bg-gradient-to-r from-red-600 to-orange-600 hover:from-red-700 hover:to-orange-700 text-white p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-110"
                 title="Clear Sketch"
               >
-                <span className="text-xl font-bold">×</span>
+                <Eraser className="w-6 h-6" />
               </button>
             )}
           </div>
